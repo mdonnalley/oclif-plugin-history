@@ -2,12 +2,13 @@
 import {Select, TextInput, ThemeProvider, defaultTheme, extendTheme} from '@inkjs/ui'
 import {Command, Interfaces} from '@oclif/core'
 import {Ansis} from 'ansis'
-import {Box, Text, type TextProps, render} from 'ink'
+import {Box, type Key, Text, type TextProps, render, useInput} from 'ink'
 import {exec as cpExec} from 'node:child_process'
 import {URL} from 'node:url'
-import React, {Component} from 'react'
+import React, {useState} from 'react'
 import {sort} from 'semver'
 import terminalLink from 'terminal-link'
+
 const ansis = new Ansis()
 
 type NpmDetails = {
@@ -93,6 +94,12 @@ function bytesToMB(bytes: number, decimalPlaces = 2): string {
   return `${Number.parseFloat((bytes / 1024 / 1024).toFixed(decimalPlaces))}mb`
 }
 
+function normalizeGitUrl(url: string): string {
+  const {host, pathname} = new URL(url)
+  return `https://${host}${pathname.replace('.git', '')}`
+
+}
+
 const customTheme = extendTheme(defaultTheme, {
   components: {
     Select: {
@@ -119,102 +126,111 @@ const customTheme = extendTheme(defaultTheme, {
   },
 })
 
-class VersionScroller extends Component<VersionScrollerProps> {
-  public state = {
+function VersionScroller({config, npmDetails}: VersionScrollerProps) {
+  const {time, versions} = npmDetails
+  const makeOptions = (options: string[]) => sort(options).reverse().map((version) => ({
+    label: `${version} ${ansis.dim(humanReadableShortDate(time[version]))}`,
+    value: version,
+  }))
+
+
+  const [state, setState] = useState({
+    active: 'search' as 'search' | 'select',
     display: 'Select a version or search for one in the input above',
-    options: [],
-    query: '',
-    value: undefined as string | undefined,
-  }
+    options: makeOptions(versions),
+    query: undefined as string | undefined,
+    value: undefined as string | undefined
+  })
 
-  private config: Interfaces.Config
-  private npmDetails: NpmDetails
-  private suggestions: string[]
+  useInput((_, key) => {
+    const allFalse = Object.values(key).every((value) => !value)
+    if (allFalse) return 'search'
 
-  public constructor(props: VersionScrollerProps) {
-    super(props)
-    this.npmDetails = props.npmDetails
-    this.config = props.config
-    this.suggestions = this.npmDetails.versions
-  }
+    const keysForSelect = ['downArrow', 'upArrow'] satisfies Array<keyof Key>
+    const keysForSearch = ['rightArrow', 'leftArrow', 'escape', 'delete', 'backspace'] satisfies Array<keyof Key>
 
-  async componentDidMount() {
-    this.setOptions()
-  }
+    if (keysForSelect.some((k) => key[k])) {
+      setState({...state, active: 'select'})
+    }
 
-  public render() {
-    return (
-      <ThemeProvider theme={customTheme}>
-        <Box flexDirection="column" gap={1}>
-          <Box borderStyle="round" borderColor="cyan" padding={1}>
-            <Text color='cyanBright'>Search: </Text>
-            <TextInput placeholder='Start typing. Hit `enter` to autocomplete a suggestion.' suggestions={this.suggestions} onChange={(value) => {
-              if (value !== this.state.query) {
-                this.setState({query: value})
-                this.setOptions(value)
-              }
-            }}/>
-          </Box>
+    if (keysForSearch.some((k) => key[k])) {
+      setState({...state, active: 'search'})
+    }
+  })
 
-          <Select
-            options={this.state.options}
-            visibleOptionCount={20}
-            onChange={async (value) => {
-              if (this.state.value !== value) {
-                this.setState({display: ansis.yellow('Loading...'), value})
-                const npm = await exec(
-                  `npm view ${this.config.name}@${value} --json --registry ${this.config.npmRegistry}`,
-                )
-                const parsed = JSON.parse(npm.toString()) as NpmDetails
-                const plugins = value
-                  ? Object.fromEntries(
-                      parsed.oclif?.plugins?.map((p) => [p, {root: p, type: 'core', version: parsed.dependencies[p]}]) ??
-                        [],
-                    )
-                  : undefined
-                const {host, pathname} = new URL(parsed.repository.url)
-                const normalizedUrl = `https://${host}${pathname.replace('.git', '')}`
-                const display = value
-                  ? `${ansis.bold.underline(`${this.config.bin}@${value}`)}
+  const updateDisplay = async (value: string) => {
+    if (state.value !== value) {
+      setState({...state, display: ansis.yellow('Loading...'), value})
+      const npm = await exec(
+        `npm view ${config.name}@${value} --json --registry ${config.npmRegistry}`,
+      )
+      const parsed = JSON.parse(npm.toString()) as NpmDetails
+      const plugins = value
+        ? Object.fromEntries(
+            parsed.oclif?.plugins?.map((p) => [p, {root: p, type: 'core', version: parsed.dependencies[p]}]) ??
+              [],
+          )
+        : undefined
+
+      const display = value
+        ? `${ansis.bold.underline(`${config.bin}@${value}`)}
 Locale publish date ${ansis.dim(humanReadableLocaleDate(parsed.time[value]))}
 UTC publish date ${ansis.dim(humanReadableUTCDate(parsed.time[value]))}
-Commit ${ansis.dim(terminalLink(parsed.gitHead.slice(0, 7), `${normalizedUrl}/commit/${parsed.gitHead}`))}
+Commit ${ansis.dim(terminalLink(parsed.gitHead.slice(0, 7), `${normalizeGitUrl(parsed.repository.url)}/commit/${parsed.gitHead}`))}
 Tarball ${ansis.dim(terminalLink(parsed.dist.tarball, parsed.dist.tarball))}
 Unpacked Size ${ansis.dim(bytesToMB(parsed.dist.unpackedSize))}
 Plugins
-  ${plugins ? formatPlugins(this.config, plugins).join('\n  ') : ''}`.trim()
-                  : this.determineDefaultDisplayMessage(value)
-                this.setState({display, value})
-              }
-            }}
-          />
-          <Box flexDirection="column" padding={1}>
-            <Text>{this.state.display}</Text>
+  ${plugins ? formatPlugins(config, plugins).join('\n  ') : ''}`.trim()
+        : 'Select a version or search for one in the input above'
+      setState({...state, display, value})
+    }
+  }
+
+  const handleSearchSubmit = () => {
+    setState({...state, active: 'select'})
+  }
+
+  const handleSearchChange = (query: string) => {
+    if (query !== state.query) {
+      const options = makeOptions(versions.filter((version) => checkIfMatchesQuery(query, version)))
+      setState({
+        ...state,
+        options,
+        query,
+        ...(query && options.length === 0 ? {display: 'No versions found based on input'} : {})
+      })
+    }
+  }
+
+  return (
+    <ThemeProvider theme={customTheme}>
+      <Box flexDirection='column' gap={1}>
+        <Box flexDirection='row'>
+          <Box paddingTop={1} paddingBottom={1}>
+            <Text color='cyanBright'>Search: </Text>
+          </Box>
+          <Box borderStyle='round' borderColor='cyan' width='50%'>
+            <TextInput
+              isDisabled={state.active !== 'search'}
+              placeholder='Start typing. Hit `enter` to autocomplete a suggestion.'
+              suggestions={versions}
+              onSubmit={handleSearchSubmit}
+              onChange={handleSearchChange}/>
           </Box>
         </Box>
-      </ThemeProvider>
-    )
-  }
 
-  private determineDefaultDisplayMessage(value: string | undefined): string {
-    if (this.state.query && !value) {
-      return 'No versions found based on input'
-    }
-
-    return 'Select a version or search for one in the input above'
-  }
-
-  private setOptions(query?: string) {
-    const options = sort(this.npmDetails.versions)
-      .reverse()
-      .filter((version) => checkIfMatchesQuery(query, version))
-      .map((version) => ({
-        label: `${version} ${ansis.dim(humanReadableShortDate(this.npmDetails.time[version]))}`,
-        value: version,
-      }))
-
-    this.setState({options})
-  }
+        <Select
+          isDisabled={state.active !== 'select'}
+          options={state.options}
+          visibleOptionCount={20}
+          onChange={updateDisplay}
+        />
+        <Box flexDirection='column' padding={1}>
+          <Text>{state.display}</Text>
+        </Box>
+    </Box>
+  </ThemeProvider>
+  )
 }
 
 function checkIfMatchesQuery(query: string | undefined, version: string): boolean {
