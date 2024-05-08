@@ -19,9 +19,13 @@ type NpmDetails = {
     unpackedSize: number
   }
   'dist-tags': Record<string, string>
+  engines: {
+    node: string
+  }
   gitHead: string
   name: string
   oclif?: {
+    jitPlugins?: Record<string, string>
     plugins?: string[]
   }
   repository: {
@@ -70,15 +74,13 @@ function humanReadableShortDate(date: string): string {
   return new Date(date).toLocaleDateString('en-US', {day: 'numeric', month: 'short', year: 'numeric'})
 }
 
-function formatPlugins(config: Interfaces.Config, plugins: Record<string, Interfaces.PluginVersionDetail>): string[] {
+function formatPlugins(config: Interfaces.Config, plugins: Record<string, string>): string[] {
   const sorted = Object.entries(plugins)
-    .map(([name, plugin]) => ({name, ...plugin}))
+    .map(([name, version]) => ({name, version}))
     .sort((a, b) => (a.name > b.name ? 1 : -1))
 
   return sorted.map((plugin) =>
-    `${getFriendlyName(config, plugin.name)} ${ansis.dim(plugin.version)} ${ansis.dim(`(${plugin.type})`)} ${
-      plugin.type === 'link' ? ansis.dim(plugin.root) : ''
-    }`.trim(),
+    `${getFriendlyName(config, plugin.name)} ${ansis.dim(plugin.version)}`.trim(),
   )
 }
 
@@ -135,59 +137,88 @@ function VersionScroller({config, npmDetails}: VersionScrollerProps) {
 
 
   const [state, setState] = useState({
-    active: 'search' as 'search' | 'select',
-    display: 'Select a version or search for one in the input above',
+    activeComponent: 'search' as 'search' | 'select',
+    activeDisplay: 'truncatedDisplay' as 'fullDisplay' | 'truncatedDisplay',
+    fullDisplay: 'Select a version or search for one in the input above',
     options: makeOptions(versions),
     query: undefined as string | undefined,
-    value: undefined as string | undefined
+    selected: undefined as string | undefined,
+    truncatedDisplay: 'Select a version or search for one in the input above'
   })
 
   useInput((_, key) => {
     const allFalse = Object.values(key).every((value) => !value)
     if (allFalse) return 'search'
 
+    if (key.shift && key.rightArrow) {
+      setState({...state, activeDisplay: 'fullDisplay'})
+      return
+    }
+
+    if (key.shift && key.leftArrow) {
+      setState({...state, activeDisplay: 'truncatedDisplay'})
+      return
+    }
+
     const keysForSelect = ['downArrow', 'upArrow'] satisfies Array<keyof Key>
     const keysForSearch = ['rightArrow', 'leftArrow', 'escape', 'delete', 'backspace'] satisfies Array<keyof Key>
 
     if (keysForSelect.some((k) => key[k])) {
-      setState({...state, active: 'select'})
+      setState({...state, activeComponent: 'select'})
+      return
     }
 
     if (keysForSearch.some((k) => key[k])) {
-      setState({...state, active: 'search'})
+      setState({...state, activeComponent: 'search'})
     }
   })
 
-  const updateDisplay = async (value: string) => {
-    if (state.value !== value) {
-      setState({...state, display: ansis.yellow('Loading...'), value})
+  const updateDisplay = async (selected: string) => {
+    if (state.selected !== selected) {
+      setState({...state, selected, truncatedDisplay: ansis.yellow('Loading...')})
       const npm = await exec(
-        `npm view ${config.name}@${value} --json --registry ${config.npmRegistry}`,
+        `npm view ${config.name}@${selected} --json --registry ${config.npmRegistry}`,
       )
       const parsed = JSON.parse(npm.toString()) as NpmDetails
-      const plugins = value
+      const plugins = selected
         ? Object.fromEntries(
-            parsed.oclif?.plugins?.map((p) => [p, {root: p, type: 'core', version: parsed.dependencies[p]}]) ??
+            parsed.oclif?.plugins?.map((p) => [p, parsed.dependencies[p]]) ??
               [],
           )
         : undefined
 
-      const display = value
-        ? `${ansis.bold.underline(`${config.bin}@${value}`)}
-Locale publish date ${ansis.dim(humanReadableLocaleDate(parsed.time[value]))}
-UTC publish date ${ansis.dim(humanReadableUTCDate(parsed.time[value]))}
+      const dependencies = Object.entries(parsed.dependencies).filter(([dep]) => !parsed.oclif?.plugins?.includes(dep)).map(([dep, version]) => `${dep} ${ansis.dim(version)}`)
+      const jitPlugins = Object.entries(parsed.oclif?.jitPlugins ?? []).map(([dep, version]) => `${dep} ${ansis.dim(version)}`)
+
+      const base = selected
+        ? `${ansis.bold.underline(`${parsed.name}@${selected}`)}
+Locale publish date ${ansis.dim(humanReadableLocaleDate(parsed.time[selected]))}
+UTC publish date ${ansis.dim(humanReadableUTCDate(parsed.time[selected]))}
 Commit ${ansis.dim(terminalLink(parsed.gitHead.slice(0, 7), `${normalizeGitUrl(parsed.repository.url)}/commit/${parsed.gitHead}`))}
 Tarball ${ansis.dim(terminalLink(parsed.dist.tarball, parsed.dist.tarball))}
 Unpacked Size ${ansis.dim(bytesToMB(parsed.dist.unpackedSize))}
 Plugins
   ${plugins ? formatPlugins(config, plugins).join('\n  ') : ''}`.trim()
         : 'Select a version or search for one in the input above'
-      setState({...state, display, value})
+
+
+      const fullDisplay = selected ? `${base}
+JIT Plugins
+  ${jitPlugins.join('\n  ')}
+Non-plugin Dependencies
+  ${dependencies.join('\n  ')}
+Engines
+  Node ${ansis.dim(parsed.engines.node)}
+
+${ansis.green('Press shift + left arrow to exit full view')}` : 'Select a version or search for one in the input above'
+
+      const truncatedDisplay = `${base}\n\n${ansis.green('Press shift + right arrow to enter full view')}`
+      setState({...state, activeDisplay: 'truncatedDisplay', fullDisplay, selected, truncatedDisplay})
     }
   }
 
   const handleSearchSubmit = () => {
-    setState({...state, active: 'select'})
+    setState({...state, activeComponent: 'select'})
   }
 
   const handleSearchChange = (query: string) => {
@@ -197,7 +228,7 @@ Plugins
         ...state,
         options,
         query,
-        ...(query && options.length === 0 ? {display: 'No versions found based on input'} : {})
+        ...(query && options.length === 0 ? {truncatedDisplay: 'No versions found based on input'} : {})
       })
     }
   }
@@ -209,9 +240,9 @@ Plugins
           <Box paddingTop={1} paddingBottom={1}>
             <Text color='cyanBright'>Search: </Text>
           </Box>
-          <Box borderStyle='round' borderColor='cyan' width='50%'>
+          <Box borderStyle='round' borderColor='cyan' width='90%'>
             <TextInput
-              isDisabled={state.active !== 'search'}
+              isDisabled={state.activeComponent !== 'search'}
               placeholder='Start typing. Hit `enter` to autocomplete a suggestion.'
               suggestions={versions}
               onSubmit={handleSearchSubmit}
@@ -219,14 +250,18 @@ Plugins
           </Box>
         </Box>
 
-        <Select
-          isDisabled={state.active !== 'select'}
-          options={state.options}
-          visibleOptionCount={20}
-          onChange={updateDisplay}
-        />
-        <Box flexDirection='column' padding={1}>
-          <Text>{state.display}</Text>
+        <Box flexDirection='row'>
+          <Box width='25%'>
+            <Select
+              isDisabled={state.activeComponent !== 'select'}
+              options={state.options}
+              visibleOptionCount={20}
+              onChange={updateDisplay}
+            />
+          </Box>
+          <Box width='75%'>
+            <Text>{state[state.activeDisplay]}</Text>
+          </Box>
         </Box>
     </Box>
   </ThemeProvider>
