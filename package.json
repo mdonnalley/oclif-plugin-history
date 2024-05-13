@@ -1,15 +1,15 @@
 {
-  "name": "@oclif/plugin-history",
+  "name": "oclif-plugin-history",
   "version": "0.0.0",
   "description": "plugin for exploring history of a CLI",
   "keywords": [
     "oclif"
   ],
-  "homepage": "https://github.com/oclif/plugin-history",
-  "bugs": "https://github.com/oclif/plugin-history/issues",
-  "repository": "oclif/plugin-history",
+  "homepage": "https://github.com/mdonnalley/oclif-plugin-history",
+  "bugs": "https://github.com/mdonnalley/oclif-plugin-history/issues",
+  "repository": "mdonnalley/oclif-plugin-history",
   "license": "MIT",
-  "author": "Salesforce",
+  "author": "Mike Donnalley (@mdonnalley)",
   "type": "module",
   "exports": "./lib/index.js",
   "types": "dist/index.d.ts",
